@@ -2,6 +2,7 @@
 """
 LightOnOCR-2 Hungarian Fine-tuning Script
 Optimized for H100 GPU (80GB VRAM)
+Based on official LightOnOCR fine-tuning notebook
 """
 
 import json
@@ -15,12 +16,11 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from torch.utils.data import Dataset as TorchDataset
 from transformers import (
-    AutoProcessor,
-    AutoModelForImageTextToText,
+    LightOnOcrProcessor,
+    LightOnOcrForConditionalGeneration,
     TrainingArguments,
     Trainer,
 )
-from peft import LoraConfig, get_peft_model, TaskType
 
 # ============================================================================
 # CONFIGURATION
@@ -32,25 +32,21 @@ class Config:
     output_dir: str = "./output"
     merged_dir: str = "./merged"
 
-    # Data - smaller to avoid OOM
-    num_images: int = 600
-    img_width: int = 600
-    img_height: int = 300
-    font_sizes: tuple = (18, 20, 22, 24)
+    # Data
+    num_images: int = 800
+    img_width: int = 700
+    img_height: int = 350
+    font_sizes: tuple = (18, 20, 22, 24, 26)
     augment_ratio: float = 0.5
 
-    # LoRA
-    lora_r: int = 8
-    lora_alpha: int = 16
-    lora_dropout: float = 0.05
-
     # Training
-    batch_size: int = 1
-    gradient_accumulation: int = 16
-    num_epochs: int = 3
-    learning_rate: float = 2e-5
-    warmup_ratio: float = 0.1
-    max_tokens: int = 256
+    batch_size: int = 4
+    gradient_accumulation: int = 4
+    num_epochs: int = 2
+    learning_rate: float = 5e-5
+    warmup_steps: int = 20
+    max_length: int = 512
+    longest_edge: int = 700
 
     data_dir: str = "./data"
     font_dir: str = "./fonts"
@@ -126,11 +122,11 @@ def get_working_fonts(font_dir: str) -> list:
 
 def generate_text() -> str:
     lines = []
-    lines.append(" ".join(random.sample(HUNGARIAN_WORDS, random.randint(5, 7))))
+    lines.append(" ".join(random.sample(HUNGARIAN_WORDS, random.randint(5, 8))))
     lines.append(f"Összeg: {random.randint(1, 99)} {random.randint(100, 999):03d} Ft")
     lines.append(f"Adószám: {random.randint(10000000, 99999999)}-{random.randint(1, 2)}-{random.randint(10, 99)}")
     lines.append("őűŐŰ öüóéáíú - ŐŰÖÜÓÉÁÍÚ")
-    lines.append(" ".join(random.sample(HUNGARIAN_WORDS, random.randint(4, 6))))
+    lines.append(" ".join(random.sample(HUNGARIAN_WORDS, random.randint(4, 7))))
     return "\n".join(lines)
 
 
@@ -141,7 +137,7 @@ def render_text(text: str, font_path: str, config: Config) -> Image.Image:
     img = Image.new("RGB", (config.img_width, config.img_height), bg_color)
     draw = ImageDraw.Draw(img)
     y = 25
-    line_height = int(font_size * 1.4)
+    line_height = int(font_size * 1.5)
     for line in text.split("\n"):
         if y + line_height > config.img_height - 20:
             break
@@ -187,14 +183,12 @@ def generate_dataset(config: Config, fonts: list) -> None:
 
 
 # ============================================================================
-# DATASET CLASS - with image_sizes support
+# DATASET CLASS - Following official notebook pattern
 # ============================================================================
 
 class OCRDataset(TorchDataset):
-    def __init__(self, jsonl_path: str, img_dir: str, processor, max_tokens: int):
-        self.processor = processor
+    def __init__(self, jsonl_path: str, img_dir: str):
         self.img_dir = Path(img_dir)
-        self.max_tokens = max_tokens
         with open(jsonl_path, encoding="utf-8") as f:
             self.data = [json.loads(line) for line in f]
 
@@ -204,45 +198,81 @@ class OCRDataset(TorchDataset):
     def __getitem__(self, idx):
         item = self.data[idx]
         img = Image.open(self.img_dir / item["image"]).convert("RGB")
+        return {"image": img, "text": item["text"]}
 
-        # Get image size
-        width, height = img.size
 
-        # Process image
-        img_inputs = self.processor.image_processor(img, return_tensors="pt")
+# ============================================================================
+# DATA COLLATOR - Following official notebook pattern
+# ============================================================================
 
-        # Process text
-        txt_inputs = self.processor.tokenizer(
-            item["text"],
+def create_collate_fn(processor, config):
+    """Create data collator following official LightOnOCR pattern."""
+
+    # Assistant start pattern for masking: <|im_end|>\n<|im_start|>assistant\n
+    ASSISTANT_START_PATTERN = [151645, 198, 151644, 77091, 198]
+
+    def collate_fn(examples):
+        batch_messages = []
+        batch_images = []
+
+        for example in examples:
+            image = example["image"]
+            text = example["text"].strip()
+            batch_images.append(image)
+
+            messages = [
+                {"role": "user", "content": [{"type": "image"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": text}]},
+            ]
+            batch_messages.append(messages)
+
+        # Apply chat template
+        texts = [
+            processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=False
+            )
+            for messages in batch_messages
+        ]
+
+        # Process with processor
+        inputs = processor(
+            text=texts,
+            images=batch_images,
             return_tensors="pt",
-            padding="max_length",
-            max_length=self.max_tokens,
+            padding=True,
             truncation=True,
+            max_length=config.max_length,
+            size={"longest_edge": config.longest_edge},
         )
 
-        return {
-            "pixel_values": img_inputs["pixel_values"].squeeze(0),
-            "image_sizes": torch.tensor([[height, width]]),  # Add image sizes!
-            "input_ids": txt_inputs["input_ids"].squeeze(0),
-            "attention_mask": txt_inputs["attention_mask"].squeeze(0),
-            "labels": txt_inputs["input_ids"].squeeze(0),
-        }
+        # Create labels with proper masking
+        labels = inputs["input_ids"].clone()
+        pad_token_id = processor.tokenizer.pad_token_id
 
+        for i in range(len(labels)):
+            full_ids = inputs["input_ids"][i].tolist()
 
-# ============================================================================
-# CUSTOM DATA COLLATOR
-# ============================================================================
+            # Find where assistant content starts
+            assistant_content_start = None
+            for idx in range(len(full_ids) - len(ASSISTANT_START_PATTERN)):
+                if full_ids[idx:idx + len(ASSISTANT_START_PATTERN)] == ASSISTANT_START_PATTERN:
+                    assistant_content_start = idx + len(ASSISTANT_START_PATTERN)
+                    break
 
-class VisionDataCollator:
-    def __call__(self, features):
-        batch = {
-            "pixel_values": torch.stack([f["pixel_values"] for f in features]),
-            "image_sizes": torch.cat([f["image_sizes"] for f in features], dim=0),
-            "input_ids": torch.stack([f["input_ids"] for f in features]),
-            "attention_mask": torch.stack([f["attention_mask"] for f in features]),
-            "labels": torch.stack([f["labels"] for f in features]),
-        }
-        return batch
+            if assistant_content_start is None:
+                labels[i, :] = -100
+            else:
+                # Mask everything before assistant response
+                labels[i, :assistant_content_start] = -100
+                # Mask padding
+                labels[i, inputs["input_ids"][i] == pad_token_id] = -100
+
+        inputs["labels"] = labels
+        inputs["pixel_values"] = inputs["pixel_values"].to(torch.bfloat16)
+
+        return inputs
+
+    return collate_fn
 
 
 # ============================================================================
@@ -252,6 +282,7 @@ class VisionDataCollator:
 def train(config: Config):
     print("=" * 60)
     print("LightOnOCR-2 Hungarian Fine-tuning")
+    print("Using official LightOnOCR classes (transformers 5.0)")
     print("=" * 60)
 
     fonts = get_working_fonts(config.font_dir)
@@ -266,59 +297,56 @@ def train(config: Config):
 
     torch.cuda.empty_cache()
 
-    print(f"\nLoading model: {config.model_id}")
-    model = AutoModelForImageTextToText.from_pretrained(
+    print(f"\nLoading processor: {config.model_id}")
+    processor = LightOnOcrProcessor.from_pretrained(config.model_id)
+    processor.tokenizer.padding_side = "left"
+
+    print(f"Loading model: {config.model_id}")
+    model = LightOnOcrForConditionalGeneration.from_pretrained(
         config.model_id,
         torch_dtype=torch.bfloat16,
+        attn_implementation="sdpa",
         device_map="auto",
-        trust_remote_code=True,
-        low_cpu_mem_usage=True,
     )
 
-    processor = AutoProcessor.from_pretrained(config.model_id, trust_remote_code=True)
+    # Freeze language model, train vision components
+    print("\nFreezing language model, training vision encoder + projection...")
+    for param in model.model.language_model.parameters():
+        param.requires_grad = False
+
+    # Count trainable parameters
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    print(f"Trainable: {trainable:,} / {total:,} ({100*trainable/total:.2f}%)")
 
     if hasattr(model, 'gradient_checkpointing_enable'):
         model.gradient_checkpointing_enable()
 
-    # Find target modules
-    target_modules = []
-    for name, module in model.named_modules():
-        if isinstance(module, torch.nn.Linear):
-            if any(x in name for x in ["q_proj", "v_proj"]):
-                short_name = name.split(".")[-1]
-                if short_name not in target_modules:
-                    target_modules.append(short_name)
-    if not target_modules:
-        target_modules = ["q_proj", "v_proj"]
-    print(f"LoRA target modules: {target_modules}")
-
-    lora_config = LoraConfig(
-        r=config.lora_r,
-        lora_alpha=config.lora_alpha,
-        target_modules=target_modules,
-        lora_dropout=config.lora_dropout,
-        bias="none",
-        task_type=TaskType.CAUSAL_LM,
-    )
-    model = get_peft_model(model, lora_config)
-    model.print_trainable_parameters()
-
     dataset = OCRDataset(
         data_dir / "annotations.jsonl",
         data_dir / "images",
-        processor,
-        config.max_tokens,
     )
     print(f"Dataset: {len(dataset)} images")
+
+    # Split into train/val
+    train_size = int(0.9 * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(
+        dataset, [train_size, val_size]
+    )
+    print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}")
 
     training_args = TrainingArguments(
         output_dir=config.output_dir,
         num_train_epochs=config.num_epochs,
         per_device_train_batch_size=config.batch_size,
+        per_device_eval_batch_size=config.batch_size,
         gradient_accumulation_steps=config.gradient_accumulation,
         learning_rate=config.learning_rate,
-        warmup_ratio=config.warmup_ratio,
+        warmup_steps=config.warmup_steps,
         logging_steps=20,
+        eval_strategy="steps",
+        eval_steps=50,
         save_steps=200,
         save_total_limit=2,
         bf16=True,
@@ -326,29 +354,30 @@ def train(config: Config):
         report_to="none",
         dataloader_num_workers=2,
         gradient_checkpointing=True,
-        optim="adamw_torch",
-        max_grad_norm=1.0,
+        optim="adamw_torch_fused",
+        lr_scheduler_type="linear",
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
     )
+
+    collate_fn = create_collate_fn(processor, config)
 
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=dataset,
-        data_collator=VisionDataCollator(),
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
+        data_collator=collate_fn,
     )
 
-    print(f"\nTraining: {len(dataset)} images, {config.num_epochs} epochs")
-    print(f"Batch: {config.batch_size} x {config.gradient_accumulation} = {config.batch_size * config.gradient_accumulation}")
+    print(f"\nTraining: {len(train_dataset)} images, {config.num_epochs} epochs")
+    print(f"Effective batch: {config.batch_size} x {config.gradient_accumulation} = {config.batch_size * config.gradient_accumulation}")
 
     trainer.train()
     print("✓ Training complete!")
 
     print("\nSaving model...")
-    model.save_pretrained(config.output_dir)
-
-    print("Merging LoRA weights...")
-    merged = model.merge_and_unload()
-    merged.save_pretrained(config.merged_dir)
+    trainer.save_model(config.merged_dir)
     processor.save_pretrained(config.merged_dir)
     print(f"✓ Saved to {config.merged_dir}")
 
@@ -356,17 +385,26 @@ def train(config: Config):
     print("\n" + "=" * 60)
     print("Quick test...")
     print("=" * 60)
-    test_img = Image.open(data_dir / "images" / "00000.png")
-    w, h = test_img.size
-    inputs = processor.image_processor(test_img, return_tensors="pt")
-    inputs = {k: v.to(merged.device) for k, v in inputs.items()}
-    inputs["image_sizes"] = torch.tensor([[h, w]]).to(merged.device)
-    inputs["input_ids"] = processor.tokenizer("", return_tensors="pt")["input_ids"].to(merged.device)
+
+    test_img = Image.open(data_dir / "images" / "00000.png").convert("RGB")
+    messages = [{"role": "user", "content": [{"type": "image"}]}]
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+    inputs = processor(
+        text=[text],
+        images=[[test_img]],
+        return_tensors="pt",
+        size={"longest_edge": config.longest_edge},
+    )
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    inputs["pixel_values"] = inputs["pixel_values"].to(torch.bfloat16)
 
     with torch.no_grad():
-        out = merged.generate(**inputs, max_new_tokens=200, do_sample=False)
-    result = processor.tokenizer.decode(out[0], skip_special_tokens=True)
-    print(f"Test result:\n{result[:400]}")
+        out = model.generate(**inputs, max_new_tokens=256, do_sample=False)
+
+    input_length = inputs["input_ids"].shape[1]
+    result = processor.tokenizer.decode(out[0, input_length:], skip_special_tokens=True)
+    print(f"Test result:\n{result[:500]}")
 
     print("\n" + "=" * 60)
     print("DONE!")

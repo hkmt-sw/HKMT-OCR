@@ -1,10 +1,12 @@
 # LightOnOCR-2 Hungarian Fine-tuning (H100)
 
+Based on the [official LightOnOCR fine-tuning notebook](https://colab.research.google.com/drive/1WjbsFJZ4vOAAlKtcCauFLn_evo5UBRNa).
+
 ## Quick Start
 
 ```bash
 # 1. Clone or copy this folder to the GPU server
-git clone https://github.com/YOUR_USER/HKMT-OCR.git
+git clone https://github.com/hkmt-sw/HKMT-OCR.git
 cd HKMT-OCR/scripts/finetune_h100
 
 # 2. Run
@@ -15,10 +17,10 @@ chmod +x run.sh
 That's it! The script will:
 1. Install `uv` (if needed)
 2. Create virtual environment
-3. Install dependencies
+3. Install dependencies (transformers 5.0.0)
 4. Download fonts
-5. Generate training data
-6. Train the model
+5. Generate training data with Hungarian text
+6. Fine-tune vision encoder on Hungarian characters (ő, ű)
 7. Save to `./merged`
 
 ## Manual Steps
@@ -31,12 +33,12 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 source ~/.local/bin/env
 
 # Setup
-uv venv --python 3.11
+uv venv
 uv pip install torch --index-url https://download.pytorch.org/whl/cu121
-uv pip install transformers>=4.45.0 peft datasets accelerate pillow opencv-python-headless
+uv pip install transformers==5.0.0 huggingface-hub>=1.3.1 accelerate pillow numpy
 
 # Train
-uv run python train.py
+python train.py
 ```
 
 ## Configuration
@@ -46,12 +48,12 @@ Edit `train.py` Config class to adjust:
 ```python
 @dataclass
 class Config:
-    num_images: int = 1500      # Training images
-    img_width: int = 1000       # Image size
-    img_height: int = 500
-    lora_r: int = 32            # LoRA rank
-    batch_size: int = 8         # Batch size
-    num_epochs: int = 5         # Training epochs
+    num_images: int = 800       # Training images
+    img_width: int = 700        # Image size
+    img_height: int = 350
+    batch_size: int = 4         # Batch size (H100: 4-8)
+    gradient_accumulation: int = 4  # Effective batch = 16
+    num_epochs: int = 2         # Training epochs
 ```
 
 ## After Training
