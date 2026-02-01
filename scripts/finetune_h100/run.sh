@@ -32,7 +32,7 @@ source .venv/bin/activate
 
 echo ""
 echo "Installing dependencies..."
-# torch 2.2+ supports Python 3.12
+uv pip install setuptools wheel
 uv pip install torch --index-url https://download.pytorch.org/whl/cu121
 uv pip install transformers==4.44.2
 uv pip install peft==0.11.1
