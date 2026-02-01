@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.venv
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Training data & models (generated)
+training_data/
+fonts/
+data/
+output/
+merged/
+lora/
+*.zip
+*.tar.gz
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Output files
+output/*.txt
+output/*.md

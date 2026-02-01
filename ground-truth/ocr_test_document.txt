@@ -1,0 +1,88 @@
+OCR Teszt Dokumentum
+
+Ez egy teszt dokumentum az OCR rendszer teszteléséhez. Tartalmaz különböző problémás elemeket:
+színes dobozokat, táblázatokat, apró betűs szöveget és magyar ékezetes karaktereket (őűŐŰ).
+
+FONTOS INFORMÁCIÓ
+Fizetendő összeg: 12 345 Ft
+Fizetési határidő: 2025.12.31
+Számla azonosító: ABC123456789
+
+A kedvezmény összege ebben az időszakban: 1 234 Ft
+Összes megtakarítás: 56 789 Ft
+(Ezen összegek előzetesen levonásra kerültek.)
+
+Ez egy halványszürke szöveg ami nehezen olvasható. Teszteli a gyenge kontrasztú szöveg felismerését.
+Referencia szám: REF-2025-001234-HU
+
+Tétel	Mennyiség	Egységár	Összeg
+Vízdíj alapdíj	1 hó	1 200 Ft	1 200 Ft
+Fogyasztás (m³)	15	450 Ft	6 750 Ft
+Csatornadíj	15 m³	320 Ft	4 800 Ft
+ÁFA (27%)			3 442 Ft
+Összesen			16 192 Ft
+
+Apró betűs rész: Ez a szöveg nagyon kis méretben van írva (7pt). Gyakori a szerződések alján, számlák láblécében. Tartalmaz fontos információkat mint: adószám 12345678-2-42, bankszámlaszám: 12345678-12345678-12345678, cégjegyzékszám: 01-09-123456. A szolgáltató fenntartja a jogot a feltételek módosítására.
+
+---PAGE---
+
+Vegyes Elrendezés
+
+Bal oszlop
+
+Ügyfélszolgálat:
+Telefon: 06-1-234-5678
+Email: info@example.hu
+Cím: 1234 Budapest, Példa u. 1.
+
+Jobb oszlop
+
+Számlázási adatok:
+Név: Teszt Felhasználó
+Cím: 5678 Szeged, Minta tér 2.
+Adószám: 87654321-1-06
+
+Magyar Ékezetes Karakterek Tesztje
+
+Árvíztűrő tükörfúrógép - ÁRVÍZTŰRŐ TÜKÖRFÚRÓGÉP
+öüóőúéáűí - ÖÜÓŐÚÉÁŰÍ
+
+Tesztelendő: ékezetes betűk pontos felismerése.
+
+Számformátumok és Azonosítók
+
+Összegek: 1 234 567 Ft, 12.345,67 EUR, $9,876.54
+Dátumok: 2025.01.15., 2025-01-15, 15/01/2025
+Telefonszám: +36 1 234 5678, 06-30-123-4567
+Személyi szám: 1 234567 8901
+TAJ szám: 123 456 789
+Adóazonosító: 8765432109
+
+SIKERES TRANZAKCIÓ
+Tranzakció azonosító: TRX-2025-0001234
+Státusz: Jóváhagyva
+Időpont: 2025.01.15. 14:32:45
+
+---PAGE---
+
+Speciális Esetek
+
+Hosszú Számsorok
+
+IBAN: HU42 1234 5678 9012 3456 7890 1234
+Vonalkód szám: 5998887766554433221100
+Mérőóra állás: 00123456789
+
+Vegyes Formázás
+
+NAGYBETŰS SZÖVEG, kisbetűs szöveg, Vegyes Betűk
+Félkövér szöveg, dőlt szöveg, aláhúzott
+szám123betű, ABC-123-XYZ, #hashtag, @mention
+
+FIGYELMEZTETÉS!
+Lejárt fizetési határidő: 2025.01.01
+Késedelmi kamat: 2 345 Ft
+
+HÁTRALÉK
+Tartozás összege: 45 678 Ft
+Fizetési felszólítás száma: 3

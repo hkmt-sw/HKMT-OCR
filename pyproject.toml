@@ -1,0 +1,16 @@
+[project]
+name = "hkmt-ocr"
+version = "0.1.0"
+description = "Hungarian OCR POC - Tesseract + OpenCV parallel text block detection"
+requires-python = ">=3.11"
+dependencies = [
+    "pdf2image>=1.16.0",
+    "pytesseract>=0.3.10",
+    "opencv-python>=4.8.0",
+    "Pillow>=10.0.0",
+    "numpy>=1.24.0",
+    "mlx-vlm>=0.3.9",
+]
+
+[project.scripts]
+run-ocr = "run_ocr:main"
