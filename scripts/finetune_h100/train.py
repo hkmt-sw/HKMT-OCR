@@ -19,7 +19,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from torch.utils.data import Dataset as TorchDataset
 from transformers import (
     AutoProcessor,
-    AutoModelForVision2Seq,
+    AutoModelForImageTextToText,
     TrainingArguments,
     Trainer,
 )
@@ -39,24 +39,24 @@ class Config:
     merged_dir: str = "./merged"
 
     # Data generation - SMALLER images to avoid OOM
-    num_images: int = 1000
-    img_width: int = 800
-    img_height: int = 400
-    font_sizes: tuple = (20, 22, 24, 26)
+    num_images: int = 600
+    img_width: int = 600
+    img_height: int = 300
+    font_sizes: tuple = (18, 20, 22, 24)
     augment_ratio: float = 0.5
 
-    # LoRA
-    lora_r: int = 16
-    lora_alpha: int = 32
+    # LoRA - smaller to save memory
+    lora_r: int = 8
+    lora_alpha: int = 16
     lora_dropout: float = 0.05
 
-    # Training - Conservative settings
-    batch_size: int = 2
-    gradient_accumulation: int = 8
+    # Training - Very conservative for H100
+    batch_size: int = 1
+    gradient_accumulation: int = 16
     num_epochs: int = 3
     learning_rate: float = 2e-5
     warmup_ratio: float = 0.1
-    max_tokens: int = 384
+    max_tokens: int = 256
 
     # Paths
     data_dir: str = "./data"
@@ -324,12 +324,13 @@ def train(config: Config):
     # Load model with specific settings
     print(f"\nLoading model: {config.model_id}")
 
-    model = AutoModelForVision2Seq.from_pretrained(
+    model = AutoModelForImageTextToText.from_pretrained(
         config.model_id,
         torch_dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
         low_cpu_mem_usage=True,
+        attn_implementation="sdpa",  # Use efficient attention
     )
 
     processor = AutoProcessor.from_pretrained(

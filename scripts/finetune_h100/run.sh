@@ -34,12 +34,13 @@ echo ""
 echo "Installing dependencies..."
 uv pip install setuptools wheel
 uv pip install torch --index-url https://download.pytorch.org/whl/cu121
-uv pip install transformers==4.44.2
-uv pip install peft==0.11.1
-uv pip install datasets accelerate pillow opencv-python-headless numpy
+uv pip install "transformers>=4.45.0"
+uv pip install "peft>=0.12.0"
+uv pip install datasets accelerate pillow opencv-python-headless numpy sentencepiece protobuf
 
 echo ""
 echo "Checking versions..."
+python --version
 python -c "import torch; print(f'PyTorch: {torch.__version__}')"
 python -c "import transformers; print(f'Transformers: {transformers.__version__}')"
 
