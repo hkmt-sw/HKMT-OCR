@@ -31,8 +31,11 @@ uv venv --python 3.11
 
 echo ""
 echo "Installing dependencies..."
-uv pip install torch --index-url https://download.pytorch.org/whl/cu121
-uv pip install transformers>=4.45.0 peft datasets accelerate pillow opencv-python-headless numpy
+# Use specific versions for compatibility
+uv pip install torch==2.1.0 --index-url https://download.pytorch.org/whl/cu121
+uv pip install transformers==4.44.2  # Version compatible with LightOnOCR-2
+uv pip install peft==0.11.1
+uv pip install datasets accelerate pillow opencv-python-headless numpy
 
 echo ""
 echo "Starting training..."
@@ -46,7 +49,7 @@ echo ""
 echo "Model saved in: ./merged"
 echo ""
 echo "To download to your Mac:"
-echo "  scp -r user@this-server:$(pwd)/merged ~/Downloads/"
+echo "  scp -P PORT -r root@IP:$(pwd)/merged ~/Downloads/lighton-hun-merged"
 echo ""
 echo "Then convert to MLX:"
-echo "  mlx_vlm convert --hf-path merged --mlx-path lighton-hun-mlx -q --q-bits 4"
+echo "  mlx_vlm convert --hf-path ~/Downloads/lighton-hun-merged --mlx-path lighton-hun-mlx -q --q-bits 4"

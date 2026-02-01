@@ -19,14 +19,14 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from torch.utils.data import Dataset as TorchDataset
 from transformers import (
     AutoProcessor,
-    AutoModelForImageTextToText,
+    AutoModelForVision2Seq,
     TrainingArguments,
     Trainer,
 )
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, TaskType
 
 # ============================================================================
-# CONFIGURATION - H100 OPTIMIZED
+# CONFIGURATION
 # ============================================================================
 
 @dataclass
@@ -38,26 +38,25 @@ class Config:
     output_dir: str = "./output"
     merged_dir: str = "./merged"
 
-    # Data generation
-    num_images: int = 1500
-    img_width: int = 1000
-    img_height: int = 500
-    font_sizes: tuple = (18, 20, 22, 24, 26, 28, 30)
-    augment_ratio: float = 0.6
+    # Data generation - SMALLER images to avoid OOM
+    num_images: int = 1000
+    img_width: int = 800
+    img_height: int = 400
+    font_sizes: tuple = (20, 22, 24, 26)
+    augment_ratio: float = 0.5
 
-    # LoRA - Full power for H100
-    lora_r: int = 32
-    lora_alpha: int = 64
+    # LoRA
+    lora_r: int = 16
+    lora_alpha: int = 32
     lora_dropout: float = 0.05
-    target_modules: tuple = ("q_proj", "k_proj", "v_proj", "o_proj")
 
-    # Training - H100 optimized
-    batch_size: int = 8
-    gradient_accumulation: int = 2
-    num_epochs: int = 5
-    learning_rate: float = 5e-5
+    # Training - Conservative settings
+    batch_size: int = 2
+    gradient_accumulation: int = 8
+    num_epochs: int = 3
+    learning_rate: float = 2e-5
     warmup_ratio: float = 0.1
-    max_tokens: int = 512
+    max_tokens: int = 384
 
     # Paths
     data_dir: str = "./data"
@@ -81,35 +80,10 @@ HUNGARIAN_WORDS = [
     "tűnik", "fűszer", "hűtő", "hűvös", "hűség", "hűtlen",
     "szürke", "szűk", "szűr", "sűrű", "bűvös", "működik", "műszer",
     "fűrész", "tűrés", "bűn", "fűt", "nyű", "csűr", "dűne",
-    "gyűlik", "tűző", "fűző", "sűrít", "szűkít", "hűsít",
     # Dokumentum szavak
     "Csatornadíj", "vízdíj", "díj", "tükörfúrógép", "árvíztűrő",
-    "halványszürke", "fizetendő", "összeg", "összesen", "bruttó", "nettó",
-    "adószám", "cégjegyzékszám", "azonosító", "határidő", "lejárat",
-    "számla", "nyugta", "bizonylat", "kiállító", "vevő", "szállító",
-    "egységár", "mennyiség", "áfa", "kedvezmény", "végösszeg",
-    # Egyéb gyakori szavak ékezetekkel
-    "él", "élet", "év", "én", "és", "után", "előtt", "között",
-    "már", "más", "még", "míg", "így", "úgy", "új", "régi",
-    "kérem", "köszönöm", "üdvözöljük", "ügyfélfogadás",
-]
-
-TEMPLATES = [
-    "Fizetendő összeg: {amt} Ft",
-    "Csatornadíj: {amt} Ft",
-    "Vízdíj alapdíj: {amt} Ft",
-    "Kedvezmény: {amt} Ft",
-    "Bruttó összeg: {amt} Ft",
-    "Nettó összeg: {amt} Ft",
-    "ÁFA (27%): {amt} Ft",
-    "Végösszeg: {amt} Ft",
-    "Adószám: {tax}",
-    "Cégjegyzékszám: {ceg}",
-    "Határidő: {date}",
-    "Kiállítás dátuma: {date}",
-    "Azonosító: {id}",
-    "Számla sorszám: {id}",
-    "IBAN: HU{iban}",
+    "fizetendő", "összeg", "összesen", "bruttó", "nettó",
+    "adószám", "azonosító", "határidő",
 ]
 
 
@@ -124,7 +98,7 @@ def download_fonts(font_dir: str) -> list:
 
     print("Downloading fonts...")
 
-    # Liberation fonts (Arial, Times, Courier compatible)
+    # Liberation fonts
     os.system(f"wget -q 'https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz' -O /tmp/liberation.tar.gz")
     os.system(f"tar -xzf /tmp/liberation.tar.gz -C /tmp/")
     os.system(f"cp /tmp/liberation-fonts-ttf-2.1.5/*.ttf {font_dir}/")
@@ -133,11 +107,6 @@ def download_fonts(font_dir: str) -> list:
     os.system(f"wget -q 'https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.zip' -O /tmp/dejavu.zip")
     os.system(f"unzip -q -o /tmp/dejavu.zip -d /tmp/")
     os.system(f"cp /tmp/dejavu-fonts-ttf-2.37/ttf/*.ttf {font_dir}/")
-
-    # GNU FreeFont
-    os.system(f"wget -q 'https://ftp.gnu.org/gnu/freefont/freefont-ttf-20120503.zip' -O /tmp/freefont.zip")
-    os.system(f"unzip -q -o /tmp/freefont.zip -d /tmp/")
-    os.system(f"cp /tmp/freefont-20120503/*.ttf {font_dir}/")
 
     return list(font_dir.glob("*.ttf"))
 
@@ -179,30 +148,11 @@ def get_working_fonts(font_dir: str) -> list:
 def generate_text() -> str:
     """Generate random Hungarian text with ő/ű characters."""
     lines = []
-
-    # Random words line
-    lines.append(" ".join(random.sample(HUNGARIAN_WORDS, random.randint(6, 10))))
-
-    # Template lines
-    for _ in range(random.randint(4, 6)):
-        template = random.choice(TEMPLATES)
-        text = template.format(
-            amt=f"{random.randint(1, 999)} {random.randint(100, 999):03d}",
-            tax=f"{random.randint(10000000, 99999999)}-{random.randint(1, 2)}-{random.randint(10, 99)}",
-            ceg=f"{random.randint(1, 99):02d}-{random.randint(1, 99):02d}-{random.randint(100000, 999999)}",
-            date=f"2025.{random.randint(1, 12):02d}.{random.randint(1, 28):02d}",
-            id=f"SZ-{random.randint(100000, 999999)}",
-            iban=f"{random.randint(10, 99)} {random.randint(1000, 9999)} {random.randint(1000, 9999)} {random.randint(1000, 9999)} {random.randint(1000, 9999)}",
-        )
-        lines.append(text)
-
-    # Always include test line
-    lines.append("öüóőúéáűí - ÖÜÓŐÚÉÁŰÍ")
-    lines.append("Árvíztűrő tükörfúrógép - ÁRVÍZTŰRŐ TÜKÖRFÚRÓGÉP")
-
-    # Another random words line
-    lines.append(" ".join(random.sample(HUNGARIAN_WORDS, random.randint(5, 8))))
-
+    lines.append(" ".join(random.sample(HUNGARIAN_WORDS, random.randint(5, 7))))
+    lines.append(f"Összeg: {random.randint(1, 99)} {random.randint(100, 999):03d} Ft")
+    lines.append(f"Adószám: {random.randint(10000000, 99999999)}-{random.randint(1, 2)}-{random.randint(10, 99)}")
+    lines.append("őűŐŰ öüóéáíú - ŐŰÖÜÓÉÁÍÚ")
+    lines.append(" ".join(random.sample(HUNGARIAN_WORDS, random.randint(4, 6))))
     return "\n".join(lines)
 
 
@@ -211,57 +161,34 @@ def render_text(text: str, font_path: str, config: Config) -> Image.Image:
     font_size = random.choice(config.font_sizes)
     font = ImageFont.truetype(font_path, font_size)
 
-    # Random background
-    bg_color = random.choice(["white", "#fafafa", "#f5f5f5", "#fffef0", "#f0f0f0"])
+    bg_color = random.choice(["white", "#fafafa", "#f5f5f5"])
     img = Image.new("RGB", (config.img_width, config.img_height), bg_color)
     draw = ImageDraw.Draw(img)
 
-    # Draw text
-    y = 30
+    y = 25
     line_height = int(font_size * 1.4)
     for line in text.split("\n"):
         if y + line_height > config.img_height - 20:
             break
-        # Random text color (mostly black, sometimes dark gray)
-        text_color = random.choice(["black", "black", "black", "#333333", "#222222"])
-        draw.text((30, y), line, fill=text_color, font=font)
+        draw.text((25, y), line, fill="black", font=font)
         y += line_height
 
     return img
 
 
 def apply_augmentations(img: Image.Image) -> Image.Image:
-    """Apply random augmentations to image."""
-    # Gaussian noise
+    """Apply random augmentations."""
     if random.random() < 0.3:
         arr = np.array(img).astype(np.float32)
-        noise = np.random.normal(0, random.uniform(3, 8), arr.shape)
+        noise = np.random.normal(0, random.uniform(3, 6), arr.shape)
         img = Image.fromarray(np.clip(arr + noise, 0, 255).astype(np.uint8))
 
-    # Salt & pepper noise
-    if random.random() < 0.2:
-        arr = np.array(img)
-        amount = random.uniform(0.002, 0.008)
-        salt = np.random.random(arr.shape[:2]) < amount / 2
-        arr[salt] = 255
-        pepper = np.random.random(arr.shape[:2]) < amount / 2
-        arr[pepper] = 0
-        img = Image.fromarray(arr)
-
-    # Rotation
     if random.random() < 0.4:
-        angle = random.uniform(-2.5, 2.5)
+        angle = random.uniform(-1.5, 1.5)
         img = img.rotate(angle, fillcolor="white", expand=False)
 
-    # Blur
     if random.random() < 0.2:
-        img = img.filter(ImageFilter.GaussianBlur(radius=random.uniform(0.3, 0.8)))
-
-    # Brightness
-    if random.random() < 0.3:
-        factor = random.uniform(0.9, 1.1)
-        arr = np.array(img).astype(np.float32)
-        img = Image.fromarray(np.clip(arr * factor, 0, 255).astype(np.uint8))
+        img = img.filter(ImageFilter.GaussianBlur(radius=random.uniform(0.3, 0.6)))
 
     return img
 
@@ -282,7 +209,6 @@ def generate_dataset(config: Config, fonts: list) -> None:
 
         img = render_text(text, font_path, config)
 
-        # Apply augmentations
         augmented = random.random() < config.augment_ratio
         if augmented:
             img = apply_augmentations(img)
@@ -291,20 +217,16 @@ def generate_dataset(config: Config, fonts: list) -> None:
         annotations.append({
             "image": f"{i:05d}.png",
             "text": text,
-            "font": font_name,
-            "augmented": augmented,
         })
 
-        if (i + 1) % 100 == 0:
+        if (i + 1) % 200 == 0:
             print(f"  {i + 1}/{config.num_images}")
 
-    # Save annotations
     with open(data_dir / "annotations.jsonl", "w", encoding="utf-8") as f:
         for a in annotations:
             f.write(json.dumps(a, ensure_ascii=False) + "\n")
 
-    aug_count = sum(1 for a in annotations if a["augmented"])
-    print(f"✓ Generated {config.num_images} images ({aug_count} augmented)")
+    print(f"✓ Generated {config.num_images} images")
 
 
 # ============================================================================
@@ -327,8 +249,14 @@ class OCRDataset(TorchDataset):
         item = self.data[idx]
         img = Image.open(self.img_dir / item["image"]).convert("RGB")
 
-        img_in = self.processor.image_processor(img, return_tensors="pt")
-        txt_in = self.processor.tokenizer(
+        # Process image - get pixel values and image sizes
+        img_inputs = self.processor.image_processor(
+            img,
+            return_tensors="pt",
+        )
+
+        # Process text
+        txt_inputs = self.processor.tokenizer(
             item["text"],
             return_tensors="pt",
             padding="max_length",
@@ -336,12 +264,36 @@ class OCRDataset(TorchDataset):
             truncation=True,
         )
 
+        pixel_values = img_inputs["pixel_values"].squeeze(0)
+
         return {
-            "pixel_values": img_in["pixel_values"].squeeze(0),
-            "input_ids": txt_in["input_ids"].squeeze(0),
-            "attention_mask": txt_in["attention_mask"].squeeze(0),
-            "labels": txt_in["input_ids"].squeeze(0),
+            "pixel_values": pixel_values,
+            "input_ids": txt_inputs["input_ids"].squeeze(0),
+            "attention_mask": txt_inputs["attention_mask"].squeeze(0),
+            "labels": txt_inputs["input_ids"].squeeze(0),
         }
+
+
+# ============================================================================
+# CUSTOM DATA COLLATOR
+# ============================================================================
+
+class VisionDataCollator:
+    """Custom collator for vision-language models."""
+
+    def __call__(self, features):
+        batch = {}
+
+        # Stack pixel values
+        pixel_values = torch.stack([f["pixel_values"] for f in features])
+        batch["pixel_values"] = pixel_values
+
+        # Stack text tensors
+        batch["input_ids"] = torch.stack([f["input_ids"] for f in features])
+        batch["attention_mask"] = torch.stack([f["attention_mask"] for f in features])
+        batch["labels"] = torch.stack([f["labels"] for f in features])
+
+        return batch
 
 
 # ============================================================================
@@ -366,24 +318,53 @@ def train(config: Config):
     else:
         print(f"Using existing dataset in {config.data_dir}")
 
-    # Load model
+    # Clear GPU memory
+    torch.cuda.empty_cache()
+
+    # Load model with specific settings
     print(f"\nLoading model: {config.model_id}")
-    model = AutoModelForImageTextToText.from_pretrained(
+
+    model = AutoModelForVision2Seq.from_pretrained(
         config.model_id,
         torch_dtype=torch.bfloat16,
         device_map="auto",
+        trust_remote_code=True,
         low_cpu_mem_usage=True,
     )
-    processor = AutoProcessor.from_pretrained(config.model_id)
+
+    processor = AutoProcessor.from_pretrained(
+        config.model_id,
+        trust_remote_code=True,
+    )
+
+    # Enable gradient checkpointing to save memory
+    if hasattr(model, 'gradient_checkpointing_enable'):
+        model.gradient_checkpointing_enable()
+
+    # Find target modules for LoRA
+    target_modules = []
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Linear):
+            if any(x in name for x in ["q_proj", "v_proj"]):
+                short_name = name.split(".")[-1]
+                if short_name not in target_modules:
+                    target_modules.append(short_name)
+
+    if not target_modules:
+        target_modules = ["q_proj", "v_proj"]
+
+    print(f"LoRA target modules: {target_modules}")
 
     # Apply LoRA
     lora_config = LoraConfig(
         r=config.lora_r,
         lora_alpha=config.lora_alpha,
-        target_modules=list(config.target_modules),
+        target_modules=target_modules,
         lora_dropout=config.lora_dropout,
         bias="none",
+        task_type=TaskType.CAUSAL_LM,
     )
+
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
@@ -404,23 +385,32 @@ def train(config: Config):
         gradient_accumulation_steps=config.gradient_accumulation,
         learning_rate=config.learning_rate,
         warmup_ratio=config.warmup_ratio,
-        logging_steps=10,
-        save_steps=100,
+        logging_steps=20,
+        save_steps=200,
         save_total_limit=2,
         bf16=True,
         remove_unused_columns=False,
         report_to="none",
-        dataloader_num_workers=4,
+        dataloader_num_workers=2,
+        gradient_checkpointing=True,
+        optim="adamw_torch",
+        max_grad_norm=1.0,
     )
+
+    # Create collator
+    data_collator = VisionDataCollator()
 
     # Train
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=dataset,
+        data_collator=data_collator,
     )
 
-    print(f"\nTraining: {len(dataset)} images, {config.num_epochs} epochs, batch={config.batch_size}")
+    print(f"\nTraining: {len(dataset)} images, {config.num_epochs} epochs")
+    print(f"Batch: {config.batch_size} x {config.gradient_accumulation} = {config.batch_size * config.gradient_accumulation}")
+
     trainer.train()
     print("✓ Training complete!")
 
@@ -435,31 +425,26 @@ def train(config: Config):
     processor.save_pretrained(config.merged_dir)
     print(f"✓ Saved to {config.merged_dir}")
 
-    # Test
+    # Quick test
     print("\n" + "=" * 60)
-    print("Testing...")
+    print("Quick test...")
     print("=" * 60)
 
-    for idx in [0, len(dataset) // 2, len(dataset) - 1]:
-        img = Image.open(data_dir / "images" / f"{idx:05d}.png")
-        inputs = processor.image_processor(img, return_tensors="pt")
-        inputs = {k: v.to(merged.device) for k, v in inputs.items()}
-        inputs["input_ids"] = processor.tokenizer("", return_tensors="pt")["input_ids"].to(merged.device)
+    test_img = Image.open(data_dir / "images" / "00000.png")
+    inputs = processor.image_processor(test_img, return_tensors="pt")
+    inputs = {k: v.to(merged.device) for k, v in inputs.items()}
+    inputs["input_ids"] = processor.tokenizer("", return_tensors="pt")["input_ids"].to(merged.device)
 
-        with torch.no_grad():
-            out = merged.generate(**inputs, max_new_tokens=400, do_sample=False)
+    with torch.no_grad():
+        out = merged.generate(**inputs, max_new_tokens=200, do_sample=False)
 
-        result = processor.tokenizer.decode(out[0], skip_special_tokens=True)
-        print(f"\n--- Image #{idx} ---")
-        print(result[:500])
+    result = processor.tokenizer.decode(out[0], skip_special_tokens=True)
+    print(f"Test result:\n{result[:400]}")
 
     print("\n" + "=" * 60)
     print("DONE!")
     print("=" * 60)
     print(f"\nModel saved to: {config.merged_dir}")
-    print("\nNext steps on Mac:")
-    print(f"  scp -r user@server:{config.merged_dir} .")
-    print(f"  mlx_vlm convert --hf-path {config.merged_dir} --mlx-path lighton-hun-mlx -q --q-bits 4")
 
 
 def main():
